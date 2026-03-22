@@ -2,23 +2,28 @@
 ARG BASE_IMAGE=python:3.11-slim
 FROM ${BASE_IMAGE}
 
-# 对于 CUDA 基础镜像，需要安装 Python
+# 安装系统依赖和 uv
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.11 \
-    python3-pip \
-    python3.11-venv \
+    python3-venv \
     ffmpeg \
     curl \
+    ca-certificates \
     && ln -sf /usr/bin/python3.11 /usr/bin/python \
-    && ln -sf /usr/bin/pip3 /usr/bin/pip \
     && rm -rf /var/lib/apt/lists/*
+
+# 安装 uv（官方方式）
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
 
 # 设置工作目录
 WORKDIR /app
 
-# 复制依赖文件并安装
+# 复制依赖文件
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+# 使用 uv 安装依赖（跳过虚拟环境，直接安装到系统）
+RUN uv pip install --system -r requirements.txt
 
 # 复制应用代码
 COPY app/ ./app/
