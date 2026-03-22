@@ -1,0 +1,28 @@
+services:
+  # GPU 版本
+  whisper-stt:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: nvidia/cuda:12.4.1-cudnn-runtime-ubuntu24.04
+    container_name: whisper-stt
+    restart: always
+    ports:
+      - "5012:8000"
+    environment:
+      - WHISPER_DEVICE=cuda
+      - WHISPER_COMPUTE_TYPE=float16
+      - WHISPER_THREADS=8
+      - WHISPER_MODEL=small
+      - WHISPER_IDLE_TIMEOUT=600
+      - WHISPER_CACHE_DIR=/root/.cache/huggingface/hub
+    volumes:
+      - ./whisper-models:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']  # 使用第一块 GPU
+              capabilities: [gpu]
