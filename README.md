@@ -1,62 +1,64 @@
 # Custom Faster-Whisper Server
 
-兼容 OpenAI API 的 Whisper 语音识别服务，支持 GPU 加速和自动卸载。
+[中文版](readme-cn.md) | English
 
-## 功能特性
+OpenAI API compatible Whisper speech recognition service with GPU acceleration and auto-unload.
 
-- **GPU/CPU 动态切换** - 支持 CUDA 和 CPU 模式
-- **智能模型管理** - 本地有模型就用本地，没有就自动下载（不检查更新）
-- **按需自动卸载** - 空闲超时后自动释放内存，可配置或禁用
-- **API 兼容** - 完全兼容 OpenAI `/v1/audio/transcriptions` 接口
-- **动态模型选择** - 在 API 请求中动态指定模型
+## Features
 
-## 快速开始
+- **GPU/CPU Switching** - Support both CUDA and CPU modes
+- **Smart Model Management** - Use local models if available, download if not (no update checks)
+- **Auto Unload** - Automatically free memory after idle timeout, configurable or disable
+- **API Compatible** - Fully compatible with OpenAI `/v1/audio/transcriptions` endpoint
+- **Dynamic Model Selection** - Specify model in API request
 
-### Docker 部署（推荐）
+## Quick Start
+
+### Docker Deployment (Recommended)
 
 ```bash
-# 克隆项目
+# Clone project
 git clone <repo-url>
 cd fasterwhisper
 
-# 配置环境变量
+# Configure environment
 cp .env.example .env
 vim .env
 
-# 启动服务
+# Start service
 docker compose up -d --build
 ```
 
-### 本地运行
+### Local Running
 
 ```bash
-# 安装 uv
+# Install uv
 pip install uv
 
-# 运行
+# Run
 ./run.sh
 ```
 
-## 配置说明
+## Configuration
 
-| 环境变量 | 默认值 | 说明 |
-|----------|--------|------|
-| `WHISPER_DEVICE` | `cuda` | 设备选择：`cuda` 或 `cpu` |
-| `WHISPER_COMPUTE_TYPE` | `float16` | GPU 用 `float16`，CPU 用 `int8` |
-| `WHISPER_THREADS` | `8` | CPU 线程数（仅 CPU 模式） |
-| `WHISPER_MODEL` | `small` | 默认模型名称 |
-| `WHISPER_IDLE_TIMEOUT` | `600` | 空闲超时（秒），0=永不卸载 |
-| `HF_HUB_OFFLINE` | `auto` | 离线模式（见下方） |
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `WHISPER_DEVICE` | `cuda` | Device: `cuda` or `cpu` |
+| `WHISPER_COMPUTE_TYPE` | `float16` | GPU: `float16`, CPU: `int8` |
+| `WHISPER_THREADS` | `8` | CPU threads (CPU mode only) |
+| `WHISPER_MODEL` | `small` | Default model name |
+| `WHISPER_IDLE_TIMEOUT` | `600` | Idle timeout (seconds), 0=never unload |
+| `HF_HUB_OFFLINE` | `auto` | Offline mode (see below) |
 
-### HF_HUB_OFFLINE 模式
+### HF_HUB_OFFLINE Modes
 
-- `auto` - **智能模式（推荐）**：本地有就用本地，没有就下载
-- `1` - 完全离线：本地没有就报错
-- `0` - 完全在线：每次检查更新
+- `auto` - **Smart mode (recommended)**: Use local if exists, download if not
+- `1` - Fully offline: Error if not found locally
+- `0` - Fully online: Check for updates every time
 
-## API 使用
+## API Usage
 
-### 语音识别
+### Transcription
 
 ```bash
 curl -X POST http://localhost:5012/v1/audio/transcriptions \
@@ -65,25 +67,25 @@ curl -X POST http://localhost:5012/v1/audio/transcriptions \
   -F "response_format=json"
 ```
 
-### 支持的模型
+### Supported Models
 
 `tiny`, `tiny.en`, `base`, `base.en`, `small`, `small.en`, `medium`, `medium.en`, `large-v2`, `large-v3`
 
-### 返回格式
+### Response Formats
 
-- `json` - 简单文本
-- `verbose_json` - 包含时间戳和词级信息
-- `text` - 纯文本
-- `srt` - SRT 字幕
-- `vtt` - VTT 字幕
+- `json` - Simple text
+- `verbose_json` - With timestamps and word-level info
+- `text` - Plain text
+- `srt` - SRT subtitles
+- `vtt` - VTT subtitles
 
-## 健康检查
+## Health Check
 
 ```bash
 curl http://localhost:5012/health
 ```
 
-返回：
+Response:
 ```json
 {
   "status": "healthy",
@@ -96,16 +98,16 @@ curl http://localhost:5012/health
 }
 ```
 
-## 项目结构
+## Project Structure
 
 ```
 fasterwhisper/
 ├── app/
-│   └── main.py          # 核心服务代码
-├── whisper-models/      # 模型缓存目录
-├── Dockerfile           # Docker 镜像构建
-├── docker-compose.yaml  # Docker Compose 配置
-├── requirements.txt     # Python 依赖
-├── .env.example         # 环境变量示例
-└── run.sh              # 本地运行脚本
+│   └── main.py          # Core service code
+├── whisper-models/      # Model cache directory
+├── Dockerfile           # Docker image build
+├── docker-compose.yaml  # Docker Compose config
+├── requirements.txt     # Python dependencies
+├── .env.example         # Environment variables example
+└── run.sh              # Local run script
 ```
