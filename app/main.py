@@ -179,9 +179,12 @@ async def health_check():
     return {
         "status": "healthy",
         "device": DEVICE,
+        "compute_type": COMPUTE_TYPE,
+        "threads": THREADS,
         "model_loaded": model_state.is_loaded(),
         "model_name": model_state.model_name,
         "idle_timeout": IDLE_TIMEOUT,
+        "hf_offline": HF_OFFLINE,
         "cache_dir": CACHE_DIR
     }
 
