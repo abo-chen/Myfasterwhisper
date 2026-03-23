@@ -39,17 +39,21 @@ CACHE_DIR = os.getenv("WHISPER_CACHE_DIR", "/root/.cache/huggingface/hub")
 IDLE_TIMEOUT = int(os.getenv("WHISPER_IDLE_TIMEOUT", "600"))
 # 默认模型
 DEFAULT_MODEL = os.getenv("WHISPER_MODEL", "small")
-# HuggingFace 离线模式 (默认: 1=离线, 0=在线检查更新)
-HF_OFFLINE = os.getenv("HF_HUB_OFFLINE", "1")
+# HuggingFace 离线模式:
+# - "0" = 完全在线（每次检查更新，不推荐）
+# - "1" = 完全离线（本地没有就报错）
+# - "auto" = 智能模式（本地有就用本地，没有就下载，不检查更新）
+HF_OFFLINE = os.getenv("HF_HUB_OFFLINE", "auto")
 
-# 设置 HuggingFace 离线模式环境变量
+# 设置环境变量（仅在完全离线模式）
 if HF_OFFLINE == "1":
     os.environ["HF_HUB_OFFLINE"] = "1"
 
 logger.info(f"配置: DEVICE={DEVICE}, COMPUTE_TYPE={COMPUTE_TYPE}, THREADS={THREADS}")
 logger.info(f"缓存目录: {CACHE_DIR}")
 logger.info(f"空闲超时: {IDLE_TIMEOUT}秒 ({'禁用自动卸载' if IDLE_TIMEOUT == 0 else '启用自动卸载'})")
-logger.info(f"HuggingFace 离线模式: {'启用 (不检查更新)' if HF_OFFLINE == '1' else '禁用 (允许检查更新)'}")
+offline_mode = "完全离线" if HF_OFFLINE == "1" else ("完全在线" if HF_OFFLINE == "0" else "智能模式(本地优先)")
+logger.info(f"HuggingFace 模式: {offline_mode}")
 
 # ========== 全局状态管理 ==========
 class ModelState:
@@ -77,14 +81,22 @@ class ModelState:
             if self.model is None:
                 logger.info(f"正在加载模型: {model_name} 到 {DEVICE}...")
                 try:
-                    # WhisperModel 参数:
-                    # model_size_or_path: 模型名称或路径
-                    # device: 'cpu', 'cuda', 'auto'
-                    # device_index: GPU 索引
-                    # compute_type: 'default', 'float16', 'int8', 'int8_float16' 等
-                    # cpu_threads: CPU 线程数
-                    # num_workers: 并行工作数
-                    # download_root: 模型缓存目录
+                    # 智能模式：检查本地是否已有模型
+                    local_files_only = False
+                    if HF_OFFLINE == "auto":
+                        # 检查本地缓存是否存在
+                        from huggingface_hub import scan_cache_dir
+                        cache = scan_cache_dir(CACHE_DIR)
+                        # 检查是否有匹配的模型缓存
+                        model_repo = f"Systran/faster-whisper-{model_name}"
+                        cached_repos = [repo.repo_id for repo in cache.repos]
+                        if model_repo in cached_repos:
+                            local_files_only = True
+                            logger.info(f"本地已存在模型 {model_name}，使用离线模式")
+                        else:
+                            logger.info(f"本地无模型 {model_name}，将下载")
+                    elif HF_OFFLINE == "1":
+                        local_files_only = True
 
                     self.model = WhisperModel(
                         model_size_or_path=model_name,
@@ -94,6 +106,7 @@ class ModelState:
                         cpu_threads=THREADS if DEVICE == "cpu" else 0,
                         num_workers=1,
                         download_root=CACHE_DIR,
+                        local_files_only=local_files_only,
                     )
                     self.model_name = model_name
                     self.last_used_time = time.time()
