@@ -22,9 +22,13 @@ from faster_whisper import WhisperModel
 logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s] %(levelname)s - %(message)s',
-    datefmt='%H:%M:%S'
+    datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+# 禁用 Uvicorn 的默认访问日志
+logging.getLogger("uvicorn.access").handlers = []
+logging.getLogger("uvicorn.access").propagate = False
 
 # ========== Environment Variables / 环境变量配置 ==========
 # GPU/CPU device selection (default: cuda, optional: cpu) / GPU/CPU 设备选择 (默认: cuda, 可选: cpu)
@@ -186,6 +190,28 @@ app = FastAPI(
 )
 
 
+# ========== Custom Access Log Middleware / 自定义访问日志中间件 ==========
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log HTTP requests with custom filtering and format / 自定义 HTTP 请求日志"""
+    import datetime
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+
+    # Format: [YYYY-MM-DD HH:MM:SS] METHOD PATH STATUS
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Skip logging successful health checks / 跳过成功的健康检查日志
+    if request.url.path == "/health" and response.status_code == 200:
+        return response
+
+    # Log the request / 记录请求
+    logger.info(f'{request.client.host}:{request.client.port} - "{request.method} {request.url.path} HTTP/{request.scope["http_version"]}" {response.status_code}')
+
+    return response
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint / 健康检查接口"""
@@ -271,10 +297,28 @@ async def transcribe(
 
         # 组装结果
         full_text = ""
+        segments_list = []
         words_list = []
 
-        for segment in segments:
+        for seg_id, segment in enumerate(segments):
             full_text += segment.text
+
+            # Build segment data (OpenAI format)
+            segment_data = {
+                "id": seg_id,
+                "seek": seg_id,
+                "start": round(segment.start, 3),
+                "end": round(segment.end, 3),
+                "text": segment.text.strip(),
+                "tokens": [],  # faster-whisper doesn't provide tokens
+                "temperature": temperature,
+                "avg_logprob": 0.0,  # faster-whisper doesn't provide this
+                "compression_ratio": 1.0,  # faster-whisper doesn't provide this
+                "no_speech_prob": 0.0,  # faster-whisper doesn't provide this
+            }
+            segments_list.append(segment_data)
+
+            # Extract word-level timestamps
             if segment.words:
                 for word in segment.words:
                     words_list.append({
@@ -290,7 +334,8 @@ async def transcribe(
                 "language": info.language,
                 "duration": round(info.duration, 2),
                 "text": full_text.strip(),
-                "words": words_list
+                "segments": segments_list,  # OpenAI standard: segments array
+                "words": words_list  # Optional: word-level timestamps
             })
         elif response_format == "json":
             return JSONResponse(content={"text": full_text.strip()})
