@@ -17,6 +17,7 @@ services:
       - WHISPER_MODEL=small
       - WHISPER_IDLE_TIMEOUT=600
       - WHISPER_CACHE_DIR=/root/.cache/huggingface/hub
+      - HF_HUB_OFFLINE=1
     volumes:
       - ./whisper-models:/root/.cache/huggingface
     deploy:

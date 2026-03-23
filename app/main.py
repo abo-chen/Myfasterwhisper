@@ -39,10 +39,17 @@ CACHE_DIR = os.getenv("WHISPER_CACHE_DIR", "/root/.cache/huggingface/hub")
 IDLE_TIMEOUT = int(os.getenv("WHISPER_IDLE_TIMEOUT", "600"))
 # 默认模型
 DEFAULT_MODEL = os.getenv("WHISPER_MODEL", "small")
+# HuggingFace 离线模式 (默认: 1=离线, 0=在线检查更新)
+HF_OFFLINE = os.getenv("HF_HUB_OFFLINE", "1")
+
+# 设置 HuggingFace 离线模式环境变量
+if HF_OFFLINE == "1":
+    os.environ["HF_HUB_OFFLINE"] = "1"
 
 logger.info(f"配置: DEVICE={DEVICE}, COMPUTE_TYPE={COMPUTE_TYPE}, THREADS={THREADS}")
 logger.info(f"缓存目录: {CACHE_DIR}")
 logger.info(f"空闲超时: {IDLE_TIMEOUT}秒 ({'禁用自动卸载' if IDLE_TIMEOUT == 0 else '启用自动卸载'})")
+logger.info(f"HuggingFace 离线模式: {'启用 (不检查更新)' if HF_OFFLINE == '1' else '禁用 (允许检查更新)'}")
 
 # ========== 全局状态管理 ==========
 class ModelState:
