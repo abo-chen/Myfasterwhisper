@@ -4,6 +4,7 @@ Custom Faster-Whisper Server / 自定义 Faster-Whisper 服务
 - Auto-unload models with configurable idle timeout / 支持按需自动卸载模型（可配置空闲超时）
 - OpenAI /v1/audio/transcriptions compatible / API 兼容 OpenAI /v1/audio/transcriptions 规范
 - Load models from local whisper-models directory / 支持从本地 whisper-models 目录加载模型
+- stable-ts support for advanced alignment / 支持 stable-ts 高级对齐功能
 """
 
 import asyncio
@@ -17,6 +18,7 @@ from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
 from fastapi.responses import JSONResponse
 from faster_whisper import WhisperModel
+import stable_whisper
 
 # 配置日志
 logging.basicConfig(
@@ -53,6 +55,12 @@ HF_OFFLINE = os.getenv("HF_HUB_OFFLINE", "auto")
 if HF_OFFLINE == "1":
     os.environ["HF_HUB_OFFLINE"] = "1"
 
+# ========== API Key Authentication / API Key 认证 ==========
+# Enable API key authentication (default: false) / 启用 API Key 认证（默认：关闭）
+API_KEY_REQUIRED = os.getenv("API_KEY_REQUIRED", "false").lower() in ("true", "1", "yes", "on")
+# Valid API keys (separated by semicolon) / 有效的 API Key（分号分隔）
+API_KEYS = [k.strip() for k in os.getenv("API_KEYS", "").split(";") if k.strip()] if API_KEY_REQUIRED else []
+
 logger.info(f"Config / 配置: DEVICE={DEVICE}, COMPUTE_TYPE={COMPUTE_TYPE}, THREADS={THREADS}")
 logger.info(f"Cache dir / 缓存目录: {CACHE_DIR}")
 logger.info(f"Idle timeout / 空闲超时: {IDLE_TIMEOUT}s ({'disabled / 禁用自动卸载' if IDLE_TIMEOUT == 0 else 'enabled / 启用自动卸载'})")
@@ -64,6 +72,7 @@ class ModelState:
     def __init__(self):
         self.model = None
         self.model_name = None
+        self.engine_type = None  # "faster-whisper" or "stable-ts"
         self.last_used_time = 0
         self._lock = asyncio.Lock()
 
@@ -73,17 +82,22 @@ class ModelState:
     def update_last_used(self):
         self.last_used_time = time.time()
 
-    async def load(self, model_name: str):
-        """Load specified model / 加载指定模型"""
+    async def load(self, model_request_name: str):
+        """Load specified model with engine detection / 加载指定模型（自动检测引擎类型）"""
         async with self._lock:
+            # Detect engine type and base model name / 检测引擎类型和基础模型名称
+            is_stable_ts = model_request_name.startswith("stable-ts-")
+            base_model_name = model_request_name.replace("stable-ts-", "")
+            engine_type = "stable-ts" if is_stable_ts else "faster-whisper"
+
             # If model exists and is different, unload first / 如果已有模型且不是请求的模型，先卸载
-            if self.model is not None and self.model_name != model_name:
-                logger.info(f"Switching model / 切换模型: unload {self.model_name} -> load {model_name}")
+            if self.model is not None and (self.model_name != base_model_name or self.engine_type != engine_type):
+                logger.info(f"Switching model / 切换模型: unload {self.engine_type}-{self.model_name} -> load {engine_type}-{base_model_name}")
                 self._unload()
 
             # If not loaded, load the requested model / 如果未加载，则加载请求的模型
             if self.model is None:
-                logger.info(f"Loading model / 正在加载模型: {model_name} to / 到 {DEVICE}...")
+                logger.info(f"Loading model / 正在加载模型: {base_model_name} ({engine_type}) to / 到 {DEVICE}...")
                 try:
                     # Smart mode: check if model exists locally / 智能模式：检查本地是否已有模型
                     local_files_only = False
@@ -92,42 +106,57 @@ class ModelState:
                         from huggingface_hub import scan_cache_dir
                         cache = scan_cache_dir(CACHE_DIR)
                         # Check if matching model cache exists / 检查是否有匹配的模型缓存
-                        model_repo = f"Systran/faster-whisper-{model_name}"
+                        model_repo = f"Systran/faster-whisper-{base_model_name}"
                         cached_repos = [repo.repo_id for repo in cache.repos]
                         if model_repo in cached_repos:
                             local_files_only = True
-                            logger.info(f"Model {model_name} exists locally, using offline mode / 本地已存在模型 {model_name}，使用离线模式")
+                            logger.info(f"Model {base_model_name} exists locally, using offline mode / 本地已存在模型 {base_model_name}，使用离线模式")
                         else:
-                            logger.info(f"Model {model_name} not found locally, will download / 本地无模型 {model_name}，将下载")
+                            logger.info(f"Model {base_model_name} not found locally, will download / 本地无模型 {base_model_name}，将下载")
                     elif HF_OFFLINE == "1":
                         local_files_only = True
 
-                    self.model = WhisperModel(
-                        model_size_or_path=model_name,
-                        device=DEVICE,
-                        device_index=0 if DEVICE == "cuda" else None,
-                        compute_type=COMPUTE_TYPE,
-                        cpu_threads=THREADS if DEVICE == "cpu" else 0,
-                        num_workers=1,
-                        download_root=CACHE_DIR,
-                        local_files_only=local_files_only,
-                    )
-                    self.model_name = model_name
+                    # Load based on engine type / 根据引擎类型加载
+                    if is_stable_ts:
+                        self.model = stable_whisper.load_faster_whisper(
+                            base_model_name,
+                            device=DEVICE,
+                            compute_type=COMPUTE_TYPE if DEVICE == "cuda" else "int8",
+                            cpu_threads=THREADS if DEVICE == "cpu" else 0,
+                            num_workers=1,
+                            download_root=CACHE_DIR,
+                            local_files_only=local_files_only,
+                        )
+                    else:
+                        self.model = WhisperModel(
+                            model_size_or_path=base_model_name,
+                            device=DEVICE,
+                            device_index=0 if DEVICE == "cuda" else None,
+                            compute_type=COMPUTE_TYPE,
+                            cpu_threads=THREADS if DEVICE == "cpu" else 0,
+                            num_workers=1,
+                            download_root=CACHE_DIR,
+                            local_files_only=local_files_only,
+                        )
+
+                    self.model_name = base_model_name
+                    self.engine_type = engine_type
                     self.last_used_time = time.time()
-                    logger.info(f"Model {model_name} loaded successfully / 模型 {model_name} 加载完成")
+                    logger.info(f"Model {base_model_name} ({engine_type}) loaded successfully / 模型 {base_model_name} ({engine_type}) 加载完成")
                 except Exception as e:
                     logger.error(f"Model load failed / 加载模型失败: {e}")
                     raise HTTPException(status_code=500, detail=f"Model load failed / 模型加载失败: {str(e)}")
 
-        return self.model
+        return self.model, self.engine_type
 
     def _unload(self):
         """Internal unload method (no lock) / 内部卸载方法（不加锁）"""
         if self.model is not None:
-            logger.info(f"Releasing resources for model {self.model_name}... / 释放模型 {self.model_name} 的系统资源...")
+            logger.info(f"Releasing resources for model {self.model_name} ({self.engine_type})... / 释放模型 {self.model_name} ({self.engine_type}) 的系统资源...")
             del self.model
             self.model = None
             self.model_name = None
+            self.engine_type = None
             gc.collect()
 
             # GPU memory cleanup / GPU 内存清理
@@ -212,6 +241,48 @@ async def log_requests(request: Request, call_next):
     return response
 
 
+# ========== API Key Authentication Middleware / API Key 认证中间件 ==========
+@app.middleware("http")
+async def api_key_auth(request: Request, call_next):
+    """API key authentication middleware / API Key 认证中间件
+
+    Supports two authentication methods / 支持两种认证方式:
+    1. Authorization header: Authorization: Bearer sk-xxx
+    2. Query parameter: ?api_key=sk-xxx
+    """
+    # Public endpoints that don't require authentication / 不需要认证的公开端点
+    public_paths = ["/health", "/v1/models", "/docs", "/redoc", "/openapi.json"]
+    if request.url.path in public_paths:
+        return await call_next(request)
+
+    # If authentication is disabled, allow all requests / 如果关闭了认证，允许所有请求
+    if not API_KEY_REQUIRED:
+        return await call_next(request)
+
+    # Extract API key from request / 从请求中提取 API Key
+    api_key = None
+
+    # Method 1: Authorization header / 方式 1：Authorization 头
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        api_key = auth_header.replace("Bearer ", "")
+
+    # Method 2: Query parameter / 方式 2：查询参数
+    if not api_key:
+        api_key = request.query_params.get("api_key")
+
+    # Validate API key / 验证 API Key
+    if not api_key or api_key not in API_KEYS:
+        logger.warning(f"Failed authentication attempt / 认证失败: {request.client.host}:{request.client.port} - {request.url.path}")
+        return JSONResponse(
+            status_code=401,
+            content={"error": {"message": "Invalid API key", "type": "invalid_request_error"}}
+        )
+
+    # Authentication successful, proceed with request / 认证成功，继续处理请求
+    return await call_next(request)
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint / 健康检查接口"""
@@ -222,9 +293,12 @@ async def health_check():
         "threads": THREADS,
         "model_loaded": model_state.is_loaded(),
         "model_name": model_state.model_name,
+        "engine_type": model_state.engine_type,
         "idle_timeout": IDLE_TIMEOUT,
         "hf_offline": HF_OFFLINE,
-        "cache_dir": CACHE_DIR
+        "cache_dir": CACHE_DIR,
+        "api_key_required": API_KEY_REQUIRED,
+        "api_keys_configured": len(API_KEYS) if API_KEY_REQUIRED else 0
     }
 
 
@@ -233,22 +307,15 @@ async def list_models():
     """List available models (simulates OpenAI API) / 列出可用模型（模拟 OpenAI API）"""
     # Can scan local directory for actual available models / 这里可以扫描本地目录获取实际可用模型
     # Currently returns common model list / 目前返回常见模型列表
-    return {
-        "object": "list",
-        "data": [
-            {"id": "tiny", "object": "model", "owned_by": "Systran"},
-            {"id": "tiny.en", "object": "model", "owned_by": "Systran"},
-            {"id": "base", "object": "model", "owned_by": "Systran"},
-            {"id": "base.en", "object": "model", "owned_by": "Systran"},
-            {"id": "small", "object": "model", "owned_by": "Systran"},
-            {"id": "small.en", "object": "model", "owned_by": "Systran"},
-            {"id": "medium", "object": "model", "owned_by": "Systran"},
-            {"id": "medium.en", "object": "model", "owned_by": "Systran"},
-            {"id": "large-v1", "object": "model", "owned_by": "Systran"},
-            {"id": "large-v2", "object": "model", "owned_by": "Systran"},
-            {"id": "large-v3", "object": "model", "owned_by": "Systran"},
-        ]
-    }
+    base_models = [
+        "tiny", "tiny.en", "base", "base.en", "small", "small.en",
+        "medium", "medium.en", "large-v1", "large-v2", "large-v3"
+    ]
+    data = []
+    for m in base_models:
+        data.append({"id": m, "object": "model", "owned_by": "Systran"})
+        data.append({"id": f"stable-ts-{m}", "object": "model", "owned_by": "Systran"})
+    return {"object": "list", "data": data}
 
 
 @app.post("/v1/audio/transcriptions")
@@ -260,24 +327,28 @@ async def transcribe(
     language: str = Form(None),
     temperature: float = Form(0.0),
     timestamp_granularities: list[str] = Form(None),
+    exact_text: str = Form(None),
 ):
     """
     OpenAI API compatible speech recognition endpoint / 兼容 OpenAI API 的语音识别接口
 
     Args:
         file: Audio file / 音频文件
-        model: Model name (tiny, base, small, medium, large-v2, large-v3, etc.) / 模型名称
+        model: Model name (tiny, base, small, medium, large-v2, large-v3, etc.)
+               Use stable-ts-* prefix for stable-ts engine (e.g., stable-ts-small)
         prompt: Initial prompt / 初始提示词
         response_format: Response format (json, verbose_json, text, srt, vtt) / 返回格式
         language: Language code (e.g., 'zh', 'en', 'ja'), None for auto-detect / 语言代码，None 表示自动检测
         temperature: Sampling temperature / 采样温度
         timestamp_granularities: Timestamp granularity (word) / 时间戳粒度
+        exact_text: [Custom] Full transcript for forced alignment (requires stable-ts-* model)
+                   [自定义] 完整逐字稿用于强制对齐（需要 stable-ts-* 模型）
     """
     # Update last used time / 更新最后使用时间
     model_state.update_last_used()
 
     # Load requested model / 加载请求的模型
-    whisper_model = await model_state.load(model)
+    whisper_model, engine_type = await model_state.load(model)
 
     # Save temp file / 保存临时文件
     temp_file = f"/tmp/temp_whisper_{time.time()}_{file.filename}"
@@ -285,74 +356,141 @@ async def transcribe(
         with open(temp_file, "wb") as f:
             f.write(await file.read())
 
-        # Execute transcription / 执行识别
-        segments, info = whisper_model.transcribe(
-            temp_file,
-            initial_prompt=prompt,
-            language=language,
-            word_timestamps=True,
-            beam_size=1,
-            temperature=temperature,
-        )
-
-        # 组装结果
-        full_text = ""
-        segments_list = []
-        words_list = []
-
-        for seg_id, segment in enumerate(segments):
-            full_text += segment.text
-
-            # Build segment data (OpenAI format)
-            segment_data = {
-                "id": seg_id,
-                "seek": seg_id,
-                "start": round(segment.start, 3),
-                "end": round(segment.end, 3),
-                "text": segment.text.strip(),
-                "tokens": [],  # faster-whisper doesn't provide tokens
-                "temperature": temperature,
-                "avg_logprob": 0.0,  # faster-whisper doesn't provide this
-                "compression_ratio": 1.0,  # faster-whisper doesn't provide this
-                "no_speech_prob": 0.0,  # faster-whisper doesn't provide this
-            }
-            segments_list.append(segment_data)
-
-            # Extract word-level timestamps
-            if segment.words:
-                for word in segment.words:
-                    words_list.append({
-                        "word": word.word.strip(),
-                        "start": round(word.start, 3),
-                        "end": round(word.end, 3)
-                    })
+        # Check for forced alignment request / 检查强制对齐请求
+        if exact_text:
+            if engine_type != "stable-ts":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Forced alignment (exact_text) requires a 'stable-ts-' prefixed model. "
+                           f"Current engine: {engine_type}. "
+                           "强制对齐 (exact_text) 需要使用 'stable-ts-' 开头的模型"
+                )
+            # Execute forced alignment / 执行强制对齐
+            result = whisper_model.align(temp_file, exact_text, language=language)
+            response = _format_to_openai_verbose_json(result, engine_type)
+        else:
+            # Execute transcription / 执行转录
+            if engine_type == "stable-ts":
+                result = whisper_model.transcribe(
+                    temp_file,
+                    language=language,
+                    initial_prompt=prompt,
+                    word_timestamps=True,
+                )
+                response = _format_to_openai_verbose_json(result, engine_type)
+            else:
+                # Native faster-whisper / 原生 faster-whisper
+                segments, info = whisper_model.transcribe(
+                    temp_file,
+                    initial_prompt=prompt,
+                    language=language,
+                    word_timestamps=True,
+                    beam_size=1,
+                    temperature=temperature,
+                )
+                response = _format_to_openai_verbose_json((segments, info), engine_type)
 
         # Return based on requested format / 根据请求格式返回
         if response_format == "verbose_json":
-            return JSONResponse(content={
-                "task": "transcribe",
-                "language": info.language,
-                "duration": round(info.duration, 2),
-                "text": full_text.strip(),
-                "segments": segments_list,  # OpenAI standard: segments array
-                "words": words_list  # Optional: word-level timestamps
-            })
+            return JSONResponse(content=response)
         elif response_format == "json":
-            return JSONResponse(content={"text": full_text.strip()})
+            return JSONResponse(content={"text": response["text"]})
         elif response_format == "text":
             from fastapi.responses import PlainTextResponse
-            return PlainTextResponse(content=full_text.strip())
+            return PlainTextResponse(content=response["text"])
         elif response_format == "srt":
-            return _generate_srt(segments)
+            return _generate_srt_from_response(response)
         elif response_format == "vtt":
-            return _generate_vtt(segments)
+            return _generate_vtt_from_response(response)
         else:
-            return JSONResponse(content={"text": full_text.strip()})
+            return JSONResponse(content={"text": response["text"]})
 
     finally:
         # Cleanup temp file / 清理临时文件
         if os.path.exists(temp_file):
             os.remove(temp_file)
+
+
+def _format_to_openai_verbose_json(result_obj, engine_type: str):
+    """Unified output adapter: converts different engine outputs to standard OpenAI format
+    统一输出适配器：将不同引擎的输出转换为标准 OpenAI 格式
+    """
+    response = {
+        "task": "transcribe",
+        "language": "unknown",
+        "duration": 0.0,
+        "text": "",
+        "words": [],
+        "segments": []
+    }
+
+    if engine_type == "stable-ts":
+        # stable-ts returns a result object with segments / stable-ts 返回包含 segments 的结果对象
+        response["language"] = getattr(result_obj, 'language', 'unknown')
+        response["duration"] = getattr(result_obj, 'duration', 0.0)
+        response["text"] = getattr(result_obj, 'text', '').strip()
+
+        # Process segments / 处理 segments
+        for seg in result_obj.segments if hasattr(result_obj, 'segments') else []:
+            seg_dict = {
+                "id": getattr(seg, 'id', 0),
+                "seek": getattr(seg, 'seek', 0),
+                "start": round(getattr(seg, 'start', 0.0), 3),
+                "end": round(getattr(seg, 'end', 0.0), 3),
+                "text": getattr(seg, 'text', '').strip(),
+                "tokens": getattr(seg, 'tokens', []),
+                "temperature": 0.0,
+                "avg_logprob": 0.0,
+                "compression_ratio": 1.0,
+                "no_speech_prob": 0.0,
+            }
+            response["segments"].append(seg_dict)
+
+            # Update duration / 更新时长
+            if seg_dict["end"] > response["duration"]:
+                response["duration"] = seg_dict["end"]
+
+            # Extract word-level timestamps / 提取词级时间戳
+            if hasattr(seg, 'words') and seg.words:
+                for w in seg.words:
+                    response["words"].append({
+                        "word": getattr(w, 'word', getattr(w, 'text', '')).strip(),
+                        "start": round(getattr(w, 'start', 0.0), 3),
+                        "end": round(getattr(w, 'end', 0.0), 3)
+                    })
+    else:
+        # faster-whisper returns (segments_generator, info_obj)
+        # faster-whisper 返回 (segments_generator, info_obj)
+        segments_gen, info = result_obj
+        response["language"] = getattr(info, 'language', 'unknown')
+        response["duration"] = round(getattr(info, 'duration', 0.0), 2)
+
+        for seg_id, seg in enumerate(segments_gen):
+            seg_dict = {
+                "id": seg_id,
+                "seek": seg_id,
+                "start": round(seg.start, 3),
+                "end": round(seg.end, 3),
+                "text": seg.text.strip(),
+                "tokens": [],
+                "temperature": 0.0,
+                "avg_logprob": 0.0,
+                "compression_ratio": 1.0,
+                "no_speech_prob": 0.0,
+            }
+            response["segments"].append(seg_dict)
+            response["text"] += seg.text
+
+            # Extract word-level timestamps / 提取词级时间戳
+            if hasattr(seg, 'words') and seg.words:
+                for w in seg.words:
+                    response["words"].append({
+                        "word": w.word.strip(),
+                        "start": round(w.start, 3),
+                        "end": round(w.end, 3)
+                    })
+
+    return response
 
 
 def _generate_srt(segments):
@@ -366,10 +504,31 @@ def _generate_srt(segments):
     return PlainTextResponse(content=srt_content)
 
 
+def _generate_srt_from_response(response: dict):
+    """Generate SRT from formatted response / 从格式化响应生成 SRT"""
+    srt_content = ""
+    for i, seg in enumerate(response["segments"], 1):
+        srt_content += f"{i}\n"
+        srt_content += f"{_format_timestamp(seg['start'])} --> {_format_timestamp(seg['end'])}\n"
+        srt_content += f"{seg['text']}\n\n"
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(content=srt_content)
+
+
+def _generate_vtt_from_response(response: dict):
+    """Generate VTT from formatted response / 从格式化响应生成 VTT"""
+    vtt_content = "WEBVTT\n\n"
+    for seg in response["segments"]:
+        vtt_content += f"{_format_timestamp(seg['start'], vtt=True)} --> {_format_timestamp(seg['end'], vtt=True)}\n"
+        vtt_content += f"{seg['text']}\n\n"
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(content=vtt_content)
+
+
 def _generate_vtt(segments):
     """Generate VTT subtitle format / 生成 VTT 字幕格式"""
     vtt_content = "WEBVTT\n\n"
-    for segment in segments:
+    for i, segment in enumerate(segments, 1):
         vtt_content += f"{_format_timestamp(segment.start, vtt=True)} --> {_format_timestamp(segment.end, vtt=True)}\n"
         vtt_content += f"{segment.text.strip()}\n\n"
     from fastapi.responses import PlainTextResponse

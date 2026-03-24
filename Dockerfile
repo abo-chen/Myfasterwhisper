@@ -1,9 +1,12 @@
+#syntax=docker/dockerfile:1.7
 # 多阶段构建，支持 CUDA 和 CPU
 ARG BASE_IMAGE=python:3.11-slim
 FROM ${BASE_IMAGE}
 
-# 安装系统依赖和 uv
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# 安装系统依赖和 uv（使用 BuildKit 缓存挂载加速）
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     python3.11 \
     python3-venv \
     ffmpeg \
@@ -22,8 +25,9 @@ WORKDIR /app
 # 复制依赖文件
 COPY requirements.txt .
 
-# 使用 uv 安装依赖（跳过虚拟环境，直接安装到系统）
-RUN uv pip install --system -r requirements.txt
+# 使用 uv 安装依赖（使用 BuildKit 缓存挂载加速）
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system -r requirements.txt
 
 # 复制应用代码
 COPY app/ ./app/
