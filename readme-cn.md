@@ -53,6 +53,7 @@ pip install uv
 | `HF_HUB_OFFLINE` | `auto` | 离线模式（见下方） |
 | `API_KEY_REQUIRED` | `false` | 是否启用 API Key 认证 |
 | `API_KEYS` | - | 有效的 API Key（分号分隔多个） |
+| `ALIGNMENT_AUTO_DETECT_LANGUAGE` | `false` | 强制对齐时自动检测语言（默认：要求用户指定） |
 
 ### HF_HUB_OFFLINE 模式
 
@@ -114,12 +115,25 @@ curl -X POST http://localhost:5012/v1/audio/transcriptions \
 
 将已有逐字稿与音频时间戳对齐（需要 `stable-ts-*` 模型）：
 
+**注意：** 默认情况下，强制对齐需要指定 `language` 参数。你可以通过设置环境变量 `ALIGNMENT_AUTO_DETECT_LANGUAGE=true` 启用自动语言检测。
+
 ```bash
+# 方式 1：手动指定语言（默认模式）
 curl -X POST http://localhost:5012/v1/audio/transcriptions \
   -F "file=@audio.wav" \
   -F "model=stable-ts-small" \
   -F "exact_text=这是完整的逐字稿内容，用于时间戳对齐" \
   -F "language=zh" \
+  -F "response_format=verbose_json"
+
+# 方式 2：启用自动检测（需设置 ALIGNMENT_AUTO_DETECT_LANGUAGE=true）
+# 在 docker-compose.yaml 中添加：
+# environment:
+#   - ALIGNMENT_AUTO_DETECT_LANGUAGE=true
+curl -X POST http://localhost:5012/v1/audio/transcriptions \
+  -F "file=@audio.wav" \
+  -F "model=stable-ts-small" \
+  -F "exact_text=这是完整的逐字稿内容，用于时间戳对齐" \
   -F "response_format=verbose_json"
 ```
 
@@ -196,3 +210,13 @@ fasterwhisper/
 ├── .env.example         # 环境变量示例
 └── run.sh              # 本地运行脚本
 ```
+
+## 更新日志
+
+### 2026-03-24
+- **新增**：使用 `filetype` 库进行音频格式验证
+- **新增**：支持 AAC 格式
+- **改进**：错误处理 - 对于无效/损坏的音频文件返回 400 而非 500
+- **新增**：强制对齐时自动语言检测功能（通过 `ALIGNMENT_AUTO_DETECT_LANGUAGE` 环境变量启用）
+- **修复**：强制对齐功能需要指定语言参数的问题
+- **支持的格式**：aac, flac, m4a, mp3, mp4, mpeg, mpga, oga, ogg, wav, webm

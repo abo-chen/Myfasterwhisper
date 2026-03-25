@@ -53,6 +53,7 @@ pip install uv
 | `HF_HUB_OFFLINE` | `auto` | Offline mode (see below) |
 | `API_KEY_REQUIRED` | `false` | Enable API key authentication |
 | `API_KEYS` | - | Valid API keys (separated by semicolon) |
+| `ALIGNMENT_AUTO_DETECT_LANGUAGE` | `false` | Auto-detect language for forced alignment (default: require user to specify) |
 
 ### HF_HUB_OFFLINE Modes
 
@@ -114,12 +115,25 @@ curl -X POST http://localhost:5012/v1/audio/transcriptions \
 
 Align an existing transcript with audio timestamps (requires `stable-ts-*` model):
 
+**Note:** By default, the `language` parameter is **required** for forced alignment. You can enable automatic language detection by setting `ALIGNMENT_AUTO_DETECT_LANGUAGE=true` in your environment.
+
 ```bash
+# Method 1: Specify language (default mode)
 curl -X POST http://localhost:5012/v1/audio/transcriptions \
   -F "file=@audio.wav" \
   -F "model=stable-ts-small" \
   -F "exact_text=This is the complete transcript for alignment" \
   -F "language=en" \
+  -F "response_format=verbose_json"
+
+# Method 2: Enable auto-detection (set ALIGNMENT_AUTO_DETECT_LANGUAGE=true)
+# In docker-compose.yaml:
+# environment:
+#   - ALIGNMENT_AUTO_DETECT_LANGUAGE=true
+curl -X POST http://localhost:5012/v1/audio/transcriptions \
+  -F "file=@audio.wav" \
+  -F "model=stable-ts-small" \
+  -F "exact_text=This is the complete transcript for alignment" \
   -F "response_format=verbose_json"
 ```
 
@@ -196,3 +210,13 @@ fasterwhisper/
 ├── .env.example         # Environment variables example
 └── run.sh              # Local run script
 ```
+
+## Changelog
+
+### 2026-03-24
+- **Added**: Audio format validation using `filetype` library
+- **Added**: Support for AAC format
+- **Improved**: Error handling - return 400 instead of 500 for invalid/corrupted audio files
+- **Added**: Auto language detection for forced alignment (via `ALIGNMENT_AUTO_DETECT_LANGUAGE` env var)
+- **Fixed**: Language parameter requirement for forced alignment feature
+- **Supported formats**: aac, flac, m4a, mp3, mp4, mpeg, mpga, oga, ogg, wav, webm

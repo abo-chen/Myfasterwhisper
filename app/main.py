@@ -69,11 +69,18 @@ API_KEY_REQUIRED = os.getenv("API_KEY_REQUIRED", "false").lower() in ("true", "1
 # Valid API keys (separated by semicolon) / 有效的 API Key（分号分隔）
 API_KEYS = [k.strip() for k in os.getenv("API_KEYS", "").split(";") if k.strip()] if API_KEY_REQUIRED else []
 
+# ========== Forced Alignment Language Detection / 强制对齐语言检测 ==========
+# Auto-detect language for forced alignment when not specified (default: false)
+# 强制对齐时自动检测语言（默认：关闭，要求用户必须指定）
+ALIGNMENT_AUTO_DETECT_LANGUAGE = os.getenv("ALIGNMENT_AUTO_DETECT_LANGUAGE", "false").lower() in ("true", "1", "yes", "on")
+
 logger.info(f"Config / 配置: DEVICE={DEVICE}, COMPUTE_TYPE={COMPUTE_TYPE}, THREADS={THREADS}")
 logger.info(f"Cache dir / 缓存目录: {CACHE_DIR}")
 logger.info(f"Idle timeout / 空闲超时: {IDLE_TIMEOUT}s ({'disabled / 禁用自动卸载' if IDLE_TIMEOUT == 0 else 'enabled / 启用自动卸载'})")
 offline_mode = "fully offline / 完全离线" if HF_OFFLINE == "1" else ("fully online / 完全在线" if HF_OFFLINE == "0" else "smart mode (local first) / 智能模式(本地优先)")
 logger.info(f"HuggingFace mode / HuggingFace 模式: {offline_mode}")
+align_lang_mode = "auto-detect / 自动检测" if ALIGNMENT_AUTO_DETECT_LANGUAGE else "require user input / 要求用户指定"
+logger.info(f"Alignment language detection / 强制对齐语言检测: {align_lang_mode}")
 
 # ========== Global State Management / 全局状态管理 ==========
 class ModelState:
@@ -262,6 +269,28 @@ def _validate_audio_file(filename: str, file_content: bytes) -> tuple[bool, str 
     return True, None
 
 
+def _detect_language(model, audio_file: str) -> str:
+    """
+    Detect language from audio file using the loaded model
+    使用加载的模型从音频文件中检测语言
+
+    Returns: detected language code (e.g., 'en', 'zh', 'fr')
+    """
+    # Run a quick transcription with language detection only
+    # 运行快速转录以仅检测语言
+    segments, info = model.transcribe(
+        audio_file,
+        language=None,  # Force auto-detection / 强制自动检测
+        beam_size=1,
+        word_timestamps=False,
+    )
+    # Consume the generator to trigger detection / 消费生成器以触发检测
+    _ = list(segments)
+    detected = info.language if hasattr(info, 'language') else 'en'
+    logger.info(f"Auto-detected language for alignment: {detected}")
+    return detected
+
+
 app = FastAPI(
     title="Custom Faster-Whisper Server",
     description="OpenAI API compatible Whisper speech recognition service with GPU acceleration and auto-unload / 兼容 OpenAI API 的 Whisper 语音识别服务，支持 GPU 加速和自动卸载",
@@ -430,8 +459,32 @@ async def transcribe(
                            f"Current engine: {engine_type}. "
                            "强制对齐 (exact_text) 需要使用 'stable-ts-' 开头的模型"
                 )
+
+            # Handle language detection for forced alignment / 处理强制对齐的语言检测
+            alignment_language = language
+            if not alignment_language:
+                if ALIGNMENT_AUTO_DETECT_LANGUAGE:
+                    # Auto-detect language from audio / 从音频自动检测语言
+                    logger.info("No language specified for forced alignment, auto-detecting... / 未指定语言，自动检测中...")
+                    alignment_language = _detect_language(whisper_model, temp_file)
+                else:
+                    # Require user to specify language / 要求用户指定语言
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "error": {
+                                "message": "The 'language' parameter is required for forced alignment (exact_text). "
+                                          "Please specify the language (e.g., language=en, language=zh, language=fr). "
+                                          "Or set ALIGNMENT_AUTO_DETECT_LANGUAGE=true to enable auto-detection. "
+                                          "强制对齐 (exact_text) 需要指定 'language' 参数。请指定语言（如：language=en、language=zh、language=fr）。"
+                                          "或设置 ALIGNMENT_AUTO_DETECT_LANGUAGE=true 启用自动检测。",
+                                "type": "invalid_request_error"
+                            }
+                        }
+                    )
+
             # Execute forced alignment / 执行强制对齐
-            result = whisper_model.align(temp_file, exact_text, language=language)
+            result = whisper_model.align(temp_file, exact_text, language=alignment_language)
             response = _format_to_openai_verbose_json(result, engine_type)
         else:
             # Execute transcription / 执行转录
