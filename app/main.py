@@ -19,6 +19,14 @@ from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
 from fastapi.responses import JSONResponse
 from faster_whisper import WhisperModel
 import stable_whisper
+import filetype
+
+# ========== Audio Format Validation / 音频格式验证 ==========
+# Supported audio formats (OpenAI Whisper compatible + AAC)
+# 支持的音频格式（兼容 OpenAI Whisper + AAC）
+SUPPORTED_FORMATS = {
+    'aac', 'flac', 'm4a', 'mp3', 'mp4', 'mpeg', 'mpga', 'oga', 'ogg', 'wav', 'webm'
+}
 
 # 配置日志
 logging.basicConfig(
@@ -211,6 +219,49 @@ async def lifespan(app: FastAPI):
     logger.info("Server shutdown / 服务已关闭")
 
 
+def _validate_audio_file(filename: str, file_content: bytes) -> tuple[bool, str | None]:
+    """
+    Validate audio file format using filetype library
+    使用 filetype 库验证音频文件格式
+
+    Returns: (is_valid, error_message)
+    """
+    # 1. Check file extension / 检查文件扩展名
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+    if ext not in SUPPORTED_FORMATS:
+        return False, f"Invalid file format. Supported formats: {sorted(SUPPORTED_FORMATS)}"
+
+    # 2. Use filetype to detect real format / 使用 filetype 检测真实格式
+    kind = filetype.guess(file_content)
+
+    # No type detected / 未检测到类型
+    if kind is None:
+        return False, f"Unable to determine file type. The file may be empty or corrupted."
+
+    # 3. Check if detected type is supported / 检查检测到的类型是否支持
+    detected_ext = kind.extension
+
+    # Allow format aliases / 允许格式别名
+    aliases = {
+        'm4a': {'aac', 'mp4'},
+        'mp4': {'aac', 'm4a'},
+        'oga': {'ogg'},
+        'mpga': {'mp3'},
+        'mpeg': {'mp3'},
+    }
+
+    # Check if detected extension matches or is an alias / 检查检测到的扩展名是否匹配或是别名
+    valid_matches = {detected_ext} | aliases.get(detected_ext, set())
+    if ext not in valid_matches:
+        return False, f"File content is {detected_ext}, but extension is .{ext}"
+
+    # 4. Verify it's audio or video (mp4/webm are video containers with audio) / 验证是音频或视频
+    if not (kind.mime.startswith('audio/') or kind.mime.startswith('video/')):
+        return False, f"Detected file type {kind.mime} is not an audio format."
+
+    return True, None
+
+
 app = FastAPI(
     title="Custom Faster-Whisper Server",
     description="OpenAI API compatible Whisper speech recognition service with GPU acceleration and auto-unload / 兼容 OpenAI API 的 Whisper 语音识别服务，支持 GPU 加速和自动卸载",
@@ -347,6 +398,20 @@ async def transcribe(
     # Update last used time / 更新最后使用时间
     model_state.update_last_used()
 
+    # Read and validate file / 读取并验证文件
+    file_content = await file.read()
+    is_valid, error_msg = _validate_audio_file(file.filename, file_content)
+    if not is_valid:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": error_msg,
+                    "type": "invalid_request_error"
+                }
+            }
+        )
+
     # Load requested model / 加载请求的模型
     whisper_model, engine_type = await model_state.load(model)
 
@@ -354,7 +419,7 @@ async def transcribe(
     temp_file = f"/tmp/temp_whisper_{time.time()}_{file.filename}"
     try:
         with open(temp_file, "wb") as f:
-            f.write(await file.read())
+            f.write(file_content)
 
         # Check for forced alignment request / 检查强制对齐请求
         if exact_text:
@@ -404,6 +469,47 @@ async def transcribe(
             return _generate_vtt_from_response(response)
         else:
             return JSONResponse(content={"text": response["text"]})
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Catch ffmpeg/av decoding errors and return 400 instead of 500
+        # 捕获 ffmpeg/av 解码错误并返回 400 而非 500
+        error_type = type(e).__name__
+        error_msg = str(e)
+        logger.warning(f"Audio decode error / 音频解码错误: {error_type}: {error_msg}")
+
+        # Check for common decode errors / 检查常见解码错误
+        if "EOFError" in error_type or "End of file" in error_msg:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": "The audio file is incomplete or corrupted. Please upload a valid audio file.",
+                        "type": "invalid_request_error"
+                    }
+                }
+            )
+        elif "Invalid data" in error_msg or "decoding" in error_msg.lower():
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": f"Unable to decode the audio file: {error_msg}",
+                        "type": "invalid_request_error"
+                    }
+                }
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": {
+                        "message": f"Internal server error during transcription: {error_msg}",
+                        "type": "server_error"
+                    }
+                }
+            )
 
     finally:
         # Cleanup temp file / 清理临时文件
