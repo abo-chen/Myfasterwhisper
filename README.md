@@ -117,6 +117,8 @@ Align an existing transcript with audio timestamps (requires `stable-ts-*` model
 
 **Note:** By default, the `language` parameter is **required** for forced alignment. You can enable automatic language detection by setting `ALIGNMENT_AUTO_DETECT_LANGUAGE=true` in your environment.
 
+**Text Sanitization:** By default, the `exact_text` is automatically sanitized to prevent alignment issues caused by hidden characters (zero-width characters, non-breaking spaces, etc.). You can disable this by setting `sanitize_text=false`.
+
 ```bash
 # Method 1: Specify language (default mode)
 curl -X POST http://localhost:5012/v1/audio/transcriptions \
@@ -134,6 +136,15 @@ curl -X POST http://localhost:5012/v1/audio/transcriptions \
   -F "file=@audio.wav" \
   -F "model=stable-ts-small" \
   -F "exact_text=This is the complete transcript for alignment" \
+  -F "response_format=verbose_json"
+
+# Method 3: Disable text sanitization (for special formatting like poetry)
+curl -X POST http://localhost:5012/v1/audio/transcriptions \
+  -F "file=@audio.wav" \
+  -F "model=stable-ts-small" \
+  -F "exact_text=This is the complete transcript for alignment" \
+  -F "language=en" \
+  -F "sanitize_text=false" \
   -F "response_format=verbose_json"
 ```
 
@@ -156,6 +167,7 @@ curl -X POST http://localhost:5012/v1/audio/transcriptions \
 | `response_format` | String | `json`, `verbose_json`, `text`, `srt`, `vtt` |
 | `timestamp_granularities[]` | Array | `word` for word-level timestamps |
 | `exact_text` | String | Full transcript for forced alignment (requires `stable-ts-*` model) |
+| `sanitize_text` | String | Enable text sanitization for forced alignment: `true` (default) or `false` |
 
 ### Response Formats
 
@@ -212,6 +224,14 @@ fasterwhisper/
 ```
 
 ## Changelog
+
+### 2026-03-29
+- **Added**: Text sanitization for forced alignment to prevent tokenization crashes
+  - Removes zero-width characters, non-breaking spaces, and control characters
+  - Unicode NFKC normalization (full-width to half-width conversion)
+  - Preserves line breaks for subtitle segmentation
+  - Optional via `sanitize_text` parameter (default: `true`)
+- **Fixed**: Alignment issues caused by hidden characters copied from PDFs/web pages
 
 ### 2026-03-24
 - **Added**: Audio format validation using `filetype` library

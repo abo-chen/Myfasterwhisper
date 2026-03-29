@@ -11,6 +11,8 @@ import asyncio
 import time
 import gc
 import os
+import re
+import unicodedata
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -269,6 +271,65 @@ def _validate_audio_file(filename: str, file_content: bytes) -> tuple[bool, str 
     return True, None
 
 
+def _sanitize_text_for_alignment(text: str, language: str = None) -> str:
+    """
+    Deep clean exact_text to prevent tokenization anomalies and alignment timestamp freezing.
+    深度清洗 exact_text，防止 Tokenizer 解析异常和对齐时间戳卡死。
+
+    Args:
+        text: Input text to sanitize / 待清洗的输入文本
+        language: Optional language code for language-specific cleaning (e.g., 'zh', 'en')
+                 可选的语言代码，用于特定语言的清洗
+
+    Returns:
+        Sanitized text / 清洗后的文本
+    """
+    if not text:
+        return text
+
+    original_text = text
+
+    # 1. Unicode Normalization (NFKC)
+    # Convert full-width characters to half-width (１２３ -> 123)
+    # Normalize composed characters (é -> é)
+    # 将全角字符转为半角（如 １２３ -> 123），组合字符转为单一字符
+    text = unicodedata.normalize('NFKC', text)
+
+    # 2. Remove zero-width characters and format control characters
+    # 移除常见的零宽字符和格式控制字符
+    zero_width_chars = ['\u200b', '\u200c', '\u200d', '\ufeff', '\xa0']
+    for char in zero_width_chars:
+        text = text.replace(char, ' ')
+
+    # 3. Remove ASCII control characters (except whitespace that will be handled next)
+    # Matches: \x00-\x08, \x0B, \x0C, \x0E-\x1F, \x7F
+    # 移除 ASCII 控制字符 (保留基础空白，因为下一步会处理)
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+
+    # 4. Normalize whitespace but preserve line breaks
+    # Replace tabs and multiple spaces with single space, keep newlines for subtitle segmentation
+    # 归一化空白符但保留换行（用于字幕分段）
+    # [^\S\n] matches any whitespace except newline
+    text = re.sub(r'[^\S\n]+', ' ', text)
+
+    # 5. [Optional] Language-specific: Chinese text cleaning
+    # Remove spaces between Chinese characters (helps with Whisper's Chinese tokenization)
+    # 仅中文：移除中文字符之间的空格
+    if language in ['zh', 'zh-CN', 'zh-TW', 'zh-HK']:
+        # Match: Chinese character + space + Chinese character, remove the space
+        # 匹配：中文字符 + 空格 + 中文字符，并移除空格
+        text = re.sub(r'(?<=[\u4e00-\u9fa5])\s+(?=[\u4e00-\u9fa5])', '', text)
+
+    text = text.strip()
+
+    # Log warning if sanitization completely cleared the text
+    # 如果清洗后文本变化极大（比如被清空了），记录一条 warning
+    if not text and original_text:
+        logger.warning("Sanitization completely cleared the text. Original text might contain only invalid characters.")
+
+    return text
+
+
 def _detect_language(model, audio_file: str) -> str:
     """
     Detect language from audio file using the loaded model
@@ -408,6 +469,7 @@ async def transcribe(
     temperature: float = Form(0.0),
     timestamp_granularities: list[str] = Form(None),
     exact_text: str = Form(None),
+    sanitize_text: str = Form("true"),
 ):
     """
     OpenAI API compatible speech recognition endpoint / 兼容 OpenAI API 的语音识别接口
@@ -423,6 +485,8 @@ async def transcribe(
         timestamp_granularities: Timestamp granularity (word) / 时间戳粒度
         exact_text: [Custom] Full transcript for forced alignment (requires stable-ts-* model)
                    [自定义] 完整逐字稿用于强制对齐（需要 stable-ts-* 模型）
+        sanitize_text: [Custom] Enable text sanitization for forced alignment (default: true)
+                      [自定义] 启用强制对齐文本清洗（默认：true）
     """
     # Update last used time / 更新最后使用时间
     model_state.update_last_used()
@@ -482,6 +546,14 @@ async def transcribe(
                             }
                         }
                     )
+
+            # Sanitize text before alignment to prevent tokenizer crashes
+            # 在对齐前清洗文本，防止 Tokenizer 崩溃
+            should_sanitize = sanitize_text.lower() in ("true", "1", "yes", "on")
+            if should_sanitize:
+                original_len = len(exact_text)
+                exact_text = _sanitize_text_for_alignment(exact_text, language=alignment_language)
+                logger.info(f"Sanitized exact_text for alignment. Length: {original_len} -> {len(exact_text)} / 已清洗对齐文本。")
 
             # Execute forced alignment / 执行强制对齐
             result = whisper_model.align(temp_file, exact_text, language=alignment_language)

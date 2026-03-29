@@ -117,6 +117,8 @@ curl -X POST http://localhost:5012/v1/audio/transcriptions \
 
 **注意：** 默认情况下，强制对齐需要指定 `language` 参数。你可以通过设置环境变量 `ALIGNMENT_AUTO_DETECT_LANGUAGE=true` 启用自动语言检测。
 
+**文本清洗：** 默认情况下，`exact_text` 会自动清洗以防止因隐藏字符（零宽字符、不间断空格等）导致对齐问题。可以通过设置 `sanitize_text=false` 禁用此功能。
+
 ```bash
 # 方式 1：手动指定语言（默认模式）
 curl -X POST http://localhost:5012/v1/audio/transcriptions \
@@ -134,6 +136,15 @@ curl -X POST http://localhost:5012/v1/audio/transcriptions \
   -F "file=@audio.wav" \
   -F "model=stable-ts-small" \
   -F "exact_text=这是完整的逐字稿内容，用于时间戳对齐" \
+  -F "response_format=verbose_json"
+
+# 方式 3：禁用文本清洗（用于诗歌等特殊格式）
+curl -X POST http://localhost:5012/v1/audio/transcriptions \
+  -F "file=@audio.wav" \
+  -F "model=stable-ts-small" \
+  -F "exact_text=这是完整的逐字稿内容，用于时间戳对齐" \
+  -F "language=zh" \
+  -F "sanitize_text=false" \
   -F "response_format=verbose_json"
 ```
 
@@ -156,6 +167,7 @@ curl -X POST http://localhost:5012/v1/audio/transcriptions \
 | `response_format` | String | `json`、`verbose_json`、`text`、`srt`、`vtt` |
 | `timestamp_granularities[]` | Array | 传 `word` 获取词级时间戳 |
 | `exact_text` | String | 完整逐字稿，用于强制对齐（需要 `stable-ts-*` 模型） |
+| `sanitize_text` | String | 启用强制对齐文本清洗：`true`（默认）或 `false` |
 
 ### 返回格式
 
@@ -212,6 +224,14 @@ fasterwhisper/
 ```
 
 ## 更新日志
+
+### 2026-03-29
+- **新增**：强制对齐文本清洗功能，防止分词器崩溃
+  - 移除零宽字符、不间断空格和控制字符
+  - Unicode NFKC 归一化（全角转半角）
+  - 保留换行符用于字幕分段
+  - 可通过 `sanitize_text` 参数控制（默认：`true`）
+- **修复**：从 PDF/网页复制的隐藏字符导致对齐失败的问题
 
 ### 2026-03-24
 - **新增**：使用 `filetype` 库进行音频格式验证
