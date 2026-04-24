@@ -120,16 +120,19 @@ class ModelState:
                     local_files_only = False
                     if HF_OFFLINE == "auto":
                         # Check local cache / 检查本地缓存是否存在
-                        from huggingface_hub import scan_cache_dir
-                        cache = scan_cache_dir(CACHE_DIR)
-                        # Check if matching model cache exists / 检查是否有匹配的模型缓存
-                        model_repo = f"Systran/faster-whisper-{base_model_name}"
-                        cached_repos = [repo.repo_id for repo in cache.repos]
-                        if model_repo in cached_repos:
-                            local_files_only = True
-                            logger.info(f"Model {base_model_name} exists locally, using offline mode / 本地已存在模型 {base_model_name}，使用离线模式")
+                        if os.path.isdir(CACHE_DIR):
+                            from huggingface_hub import scan_cache_dir
+                            cache = scan_cache_dir(CACHE_DIR)
+                            # Check if matching model cache exists / 检查是否有匹配的模型缓存
+                            model_repo = f"Systran/faster-whisper-{base_model_name}"
+                            cached_repos = [repo.repo_id for repo in cache.repos]
+                            if model_repo in cached_repos:
+                                local_files_only = True
+                                logger.info(f"Model {base_model_name} exists locally, using offline mode / 本地已存在模型 {base_model_name}，使用离线模式")
+                            else:
+                                logger.info(f"Model {base_model_name} not found locally, will download / 本地无模型 {base_model_name}，将下载")
                         else:
-                            logger.info(f"Model {base_model_name} not found locally, will download / 本地无模型 {base_model_name}，将下载")
+                            logger.info(f"Cache dir not found, will download / 缓存目录不存在，将下载模型")
                     elif HF_OFFLINE == "1":
                         local_files_only = True
 
