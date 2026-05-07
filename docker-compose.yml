@@ -1,5 +1,10 @@
 services:
   whisper-gpu0:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
     image: whisper-stt:latest
     container_name: whisper-gpu0
     ports:
@@ -26,6 +31,11 @@ services:
     restart: unless-stopped
 
   whisper-gpu1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
     image: whisper-stt:latest
     container_name: whisper-gpu1
     profiles: ["gpu1"]
