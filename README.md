@@ -1,6 +1,6 @@
 # Custom Faster-Whisper Server
 
-[中文版](readme-cn.md) | English
+English | [中文版](readme-cn.md)
 
 OpenAI API compatible Whisper speech recognition service with GPU acceleration, auto-unload, stable-ts support, and API key authentication.
 
@@ -27,8 +27,11 @@ cd fasterwhisper
 cp .env.example .env
 vim .env
 
-# Start service
+# Start GPU 0 service
 docker compose up -d --build
+
+# (Optional) Start GPU 1 service when needed
+docker compose --profile gpu1 up -d
 ```
 
 ### Local Running
@@ -111,6 +114,27 @@ curl -X POST http://localhost:5012/v1/audio/transcriptions \
   -F "response_format=verbose_json"
 ```
 
+### VAD Voice Activity Detection (Native Engine)
+
+Enable VAD to filter out non-speech segments before transcription, improving accuracy and speed for audio with long silences (native engine only):
+
+```bash
+# Enable VAD with recommended defaults
+curl -X POST http://localhost:5012/v1/audio/transcriptions \
+  -F "file=@audio.wav" \
+  -F "model=small" \
+  -F "vad_filter=true"
+
+# Custom VAD parameters
+curl -X POST http://localhost:5012/v1/audio/transcriptions \
+  -F "file=@audio.wav" \
+  -F "model=small" \
+  -F "vad_filter=true" \
+  -F "vad_min_silence_duration_ms=300" \
+  -F "vad_speech_pad_ms=200" \
+  -F "vad_threshold=0.6"
+```
+
 ### Forced Alignment
 
 Align an existing transcript with audio timestamps (requires `stable-ts-*` model):
@@ -168,6 +192,10 @@ curl -X POST http://localhost:5012/v1/audio/transcriptions \
 | `timestamp_granularities[]` | Array | `word` for word-level timestamps |
 | `exact_text` | String | Full transcript for forced alignment (requires `stable-ts-*` model) |
 | `sanitize_text` | String | Enable text sanitization for forced alignment: `true` (default) or `false` |
+| `vad_filter` | String | Enable VAD filter (native engine only): `true` or `false` (default) |
+| `vad_min_silence_duration_ms` | Int | Min silence duration in ms to split segments (default: `500`) |
+| `vad_speech_pad_ms` | Int | Padding in ms around speech segments (default: `400`) |
+| `vad_threshold` | Float | VAD confidence threshold (default: `0.5`) |
 
 ### Response Formats
 
@@ -208,22 +236,65 @@ Response:
 | Speed | Faster | Slightly slower |
 | Timestamp Quality | Good | Better (advanced alignment) |
 | Forced Alignment | No | Yes (`exact_text` parameter) |
+| VAD Filter | Yes | No |
+
+## Multi-GPU Deployment
+
+When you have multiple GPUs, you can start an additional instance on GPU 1 to increase throughput by processing requests in parallel. Both services are defined in a single `docker-compose.yml`, with GPU 1 service using a profile so it only starts on demand.
+
+### Start / Stop
+
+```bash
+# Start services
+docker compose up -d                                      # GPU 0 only
+docker compose --profile gpu1 up -d whisper-gpu1          # GPU 1 only
+docker compose --profile gpu1 up -d                       # Both GPU 0 + GPU 1
+
+# Stop services
+docker compose stop whisper-gpu0                          # GPU 0 only
+docker compose --profile gpu1 stop whisper-gpu1           # GPU 1 only
+docker compose down                                       # Stop all
+```
+
+### Usage
+
+The main service runs on port 5012 (GPU 0), and the additional instance runs on port 5013 (GPU 1). Distribute requests across both ports:
+
+```bash
+# Main service (GPU 0)
+curl -X POST http://localhost:5012/v1/audio/transcriptions \
+  -F "file=@audio.wav" \
+  -F "model=large-v3" \
+  -F "response_format=srt"
+
+# Additional instance (GPU 1)
+curl -X POST http://localhost:5013/v1/audio/transcriptions \
+  -F "file=@audio.wav" \
+  -F "model=large-v3" \
+  -F "response_format=srt"
+```
 
 ## Project Structure
 
 ```
 fasterwhisper/
 ├── app/
-│   └── main.py          # Core service code
-├── whisper-models/      # Model cache directory
-├── Dockerfile           # Docker image build
-├── docker-compose.yaml  # Docker Compose config
-├── requirements.txt     # Python dependencies
-├── .env.example         # Environment variables example
-└── run.sh              # Local run script
+│   └── main.py                     # Core service code
+├── whisper-models/                 # Model cache directory
+├── Dockerfile                      # Docker image build
+├── docker-compose.yml              # GPU 0 (default) + GPU 1 (profile: gpu1)
+├── requirements.txt                # Python dependencies
+├── .env.example                    # Environment variables example
+└── run.sh                          # Local run script
 ```
 
 ## Changelog
+
+### 2026-04-30
+- **Added**: VAD (Voice Activity Detection) filter support for native engine
+  - Filter out non-speech segments before transcription, improving accuracy and speed
+  - Configurable via `vad_filter`, `vad_min_silence_duration_ms`, `vad_speech_pad_ms`, `vad_threshold` parameters
+  - Disabled by default, only applies to native faster-whisper engine
 
 ### 2026-03-29
 - **Added**: Text sanitization for forced alignment to prevent tokenization crashes

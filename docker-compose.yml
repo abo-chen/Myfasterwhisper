@@ -1,0 +1,53 @@
+services:
+  whisper-gpu0:
+    image: whisper-stt:latest
+    container_name: whisper-gpu0
+    ports:
+      - "5012:8000"
+    environment:
+      - WHISPER_THREADS=8
+      - WHISPER_CACHE_DIR=/root/.cache/huggingface/hub
+      - WHISPER_MODEL=small
+      - WHISPER_COMPUTE_TYPE=float16
+      - WHISPER_DEVICE=cuda
+      - WHISPER_IDLE_TIMEOUT=600
+      - HF_HUB_OFFLINE=auto
+      - GPU_MEMORY_LIMIT_MB=0
+      - API_KEY_REQUIRED=false
+    volumes:
+      - ./whisper-models:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  whisper-gpu1:
+    image: whisper-stt:latest
+    container_name: whisper-gpu1
+    profiles: ["gpu1"]
+    ports:
+      - "5013:8000"
+    environment:
+      - WHISPER_THREADS=8
+      - WHISPER_CACHE_DIR=/root/.cache/huggingface/hub
+      - WHISPER_MODEL=small
+      - WHISPER_COMPUTE_TYPE=float16
+      - WHISPER_DEVICE=cuda
+      - WHISPER_IDLE_TIMEOUT=600
+      - HF_HUB_OFFLINE=auto
+      - GPU_MEMORY_LIMIT_MB=0
+      - API_KEY_REQUIRED=false
+    volumes:
+      - ./whisper-models:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]
+    restart: unless-stopped

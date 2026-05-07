@@ -473,6 +473,11 @@ async def transcribe(
     timestamp_granularities: list[str] = Form(None),
     exact_text: str = Form(None),
     sanitize_text: str = Form("true"),
+    # VAD parameters / VAD 语音活动检测参数
+    vad_filter: str = Form("false"),
+    vad_min_silence_duration_ms: int = Form(500),
+    vad_speech_pad_ms: int = Form(400),
+    vad_threshold: float = Form(0.5),
 ):
     """
     OpenAI API compatible speech recognition endpoint / 兼容 OpenAI API 的语音识别接口
@@ -490,6 +495,14 @@ async def transcribe(
                    [自定义] 完整逐字稿用于强制对齐（需要 stable-ts-* 模型）
         sanitize_text: [Custom] Enable text sanitization for forced alignment (default: true)
                       [自定义] 启用强制对齐文本清洗（默认：true）
+        vad_filter: [Custom] Enable VAD voice activity detection filter (default: false)
+                   [自定义] 启用 VAD 语音活动检测过滤（默认：false）
+        vad_min_silence_duration_ms: [Custom] Minimum silence duration in ms to split (default: 500)
+                                     [自定义] 静音最短持续时间（毫秒），超过才切割（默认：500）
+        vad_speech_pad_ms: [Custom] Padding in ms around speech segments (default: 400)
+                           [自定义] 语音段前后填充时间（毫秒）（默认：400）
+        vad_threshold: [Custom] VAD confidence threshold (default: 0.5)
+                      [自定义] VAD 置信度阈值（默认：0.5）
     """
     # Update last used time / 更新最后使用时间
     model_state.update_last_used()
@@ -573,14 +586,28 @@ async def transcribe(
                 response = _format_to_openai_verbose_json(result, engine_type)
             else:
                 # Native faster-whisper / 原生 faster-whisper
-                segments, info = whisper_model.transcribe(
-                    temp_file,
+                use_vad = vad_filter.lower() in ("true", "1", "yes", "on")
+                transcribe_kwargs = dict(
                     initial_prompt=prompt,
                     language=language,
                     word_timestamps=True,
                     beam_size=1,
                     temperature=temperature,
                 )
+                if use_vad:
+                    transcribe_kwargs["vad_filter"] = True
+                    transcribe_kwargs["vad_parameters"] = dict(
+                        min_silence_duration_ms=vad_min_silence_duration_ms,
+                        speech_pad_ms=vad_speech_pad_ms,
+                        threshold=vad_threshold,
+                    )
+                    logger.info(
+                        f"VAD enabled / VAD 已启用: "
+                        f"min_silence={vad_min_silence_duration_ms}ms, "
+                        f"speech_pad={vad_speech_pad_ms}ms, "
+                        f"threshold={vad_threshold}"
+                    )
+                segments, info = whisper_model.transcribe(temp_file, **transcribe_kwargs)
                 response = _format_to_openai_verbose_json((segments, info), engine_type)
 
         # Return based on requested format / 根据请求格式返回

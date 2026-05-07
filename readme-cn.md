@@ -1,6 +1,6 @@
 # Custom Faster-Whisper Server
 
-中文版 | [English](README.md)
+[English](README.md) | 中文版
 
 兼容 OpenAI API 的 Whisper 语音识别服务，支持 GPU 加速、自动卸载、stable-ts 高级对齐和 API Key 认证。
 
@@ -27,8 +27,11 @@ cd fasterwhisper
 cp .env.example .env
 vim .env
 
-# 启动服务
+# 启动 GPU 0 服务
 docker compose up -d --build
+
+# （可选）需要时启动 GPU 1 服务
+docker compose --profile gpu1 up -d
 ```
 
 ### 本地运行
@@ -111,6 +114,27 @@ curl -X POST http://localhost:5012/v1/audio/transcriptions \
   -F "response_format=verbose_json"
 ```
 
+### VAD 语音活动检测（原生引擎）
+
+启用 VAD 可在转录前过滤非语音片段，提升含长静音音频的准确性和速度（仅限原生引擎）：
+
+```bash
+# 使用推荐默认值启用 VAD
+curl -X POST http://localhost:5012/v1/audio/transcriptions \
+  -F "file=@audio.wav" \
+  -F "model=small" \
+  -F "vad_filter=true"
+
+# 自定义 VAD 参数
+curl -X POST http://localhost:5012/v1/audio/transcriptions \
+  -F "file=@audio.wav" \
+  -F "model=small" \
+  -F "vad_filter=true" \
+  -F "vad_min_silence_duration_ms=300" \
+  -F "vad_speech_pad_ms=200" \
+  -F "vad_threshold=0.6"
+```
+
 ### 强制对齐
 
 将已有逐字稿与音频时间戳对齐（需要 `stable-ts-*` 模型）：
@@ -168,6 +192,10 @@ curl -X POST http://localhost:5012/v1/audio/transcriptions \
 | `timestamp_granularities[]` | Array | 传 `word` 获取词级时间戳 |
 | `exact_text` | String | 完整逐字稿，用于强制对齐（需要 `stable-ts-*` 模型） |
 | `sanitize_text` | String | 启用强制对齐文本清洗：`true`（默认）或 `false` |
+| `vad_filter` | String | 启用 VAD 过滤（仅限原生引擎）：`true` 或 `false`（默认） |
+| `vad_min_silence_duration_ms` | Int | 静音最短持续时间（毫秒），超过才切割（默认：`500`） |
+| `vad_speech_pad_ms` | Int | 语音段前后填充时间（毫秒）（默认：`400`） |
+| `vad_threshold` | Float | VAD 置信度阈值（默认：`0.5`） |
 
 ### 返回格式
 
@@ -208,22 +236,65 @@ curl http://localhost:5012/health
 | 速度 | 更快 | 略慢 |
 | 时间戳质量 | 良好 | 更优（高级对齐算法） |
 | 强制对齐 | 不支持 | 支持（使用 `exact_text` 参数） |
+| VAD 过滤 | 支持 | 不支持 |
+
+## 多 GPU 部署
+
+当有多块 GPU 时，可以在 GPU 1 上启动额外实例，并行处理请求以提升吞吐量。两个服务统一在 `docker-compose.yml` 中管理，GPU 1 服务通过 profile 按需启动。
+
+### 启动 / 停止
+
+```bash
+# 启动服务
+docker compose up -d                                      # 仅 GPU 0
+docker compose --profile gpu1 up -d whisper-gpu1          # 仅 GPU 1
+docker compose --profile gpu1 up -d                       # 同时启动 GPU 0 + GPU 1
+
+# 停止服务
+docker compose stop whisper-gpu0                          # 仅停 GPU 0
+docker compose --profile gpu1 stop whisper-gpu1           # 仅停 GPU 1
+docker compose down                                       # 全部停止
+```
+
+### 使用方法
+
+主服务运行在端口 5012（GPU 0），额外实例运行在端口 5013（GPU 1）。将请求分发到两个端口即可：
+
+```bash
+# 主服务（GPU 0）
+curl -X POST http://localhost:5012/v1/audio/transcriptions \
+  -F "file=@audio.wav" \
+  -F "model=large-v3" \
+  -F "response_format=srt"
+
+# 额外实例（GPU 1）
+curl -X POST http://localhost:5013/v1/audio/transcriptions \
+  -F "file=@audio.wav" \
+  -F "model=large-v3" \
+  -F "response_format=srt"
+```
 
 ## 项目结构
 
 ```
 fasterwhisper/
 ├── app/
-│   └── main.py          # 核心服务代码
-├── whisper-models/      # 模型缓存目录
-├── Dockerfile           # Docker 镜像构建
-├── docker-compose.yaml  # Docker Compose 配置
-├── requirements.txt     # Python 依赖
-├── .env.example         # 环境变量示例
-└── run.sh              # 本地运行脚本
+│   └── main.py                     # 核心服务代码
+├── whisper-models/                 # 模型缓存目录
+├── Dockerfile                      # Docker 镜像构建
+├── docker-compose.yml              # GPU 0（默认）+ GPU 1（profile: gpu1）
+├── requirements.txt                # Python 依赖
+├── .env.example                    # 环境变量示例
+└── run.sh                          # 本地运行脚本
 ```
 
 ## 更新日志
+
+### 2026-04-30
+- **新增**：原生引擎 VAD（语音活动检测）过滤支持
+  - 转录前过滤非语音片段，提升含长静音音频的准确性和速度
+  - 通过 `vad_filter`、`vad_min_silence_duration_ms`、`vad_speech_pad_ms`、`vad_threshold` 参数配置
+  - 默认关闭，仅对原生 faster-whisper 引擎生效
 
 ### 2026-03-29
 - **新增**：强制对齐文本清洗功能，防止分词器崩溃
